@@ -12,6 +12,10 @@ Claude Code CLI, with a GitHub repository as the filesystem.
 - **State**: one thread per question, saved as `.cb/threads/<id>.json` in the content repo after
   every turn. Agents cannot read `.cb/`, so the reviewer and librarian never see the conversation.
   Subagent conversations are saved too, so the interviewer resumes with memory across exchanges.
+- **DAG tab**: `wiki/concepts/*.md` parsed into an interactive graph. `## Caused by` and `## Causes`
+  become arrows, `## Computed from` dotted arithmetic edges, a missing `{by:... on:...}` span a
+  dashed edge, `observed: false` a hollow node; filter by `graphs:`, click a node for its fields,
+  reasoning and ancestry.
 - **Pause and wait**: a turn ends when the main agent stops calling tools; the UI shows its text and
   waits. Runs that hit the time budget pause with consistent state and offer a Continue button.
 
@@ -25,6 +29,7 @@ src/lib/runner.ts        the streaming tool-use loop
 src/lib/orchestrator.ts  a turn: command routing, main agent, invoke_subagent, state
 src/lib/threads.ts       thread state in .cb/threads/
 src/lib/prompts.ts       system prompts for main and subagents
+src/lib/dag.ts           concept-file parser and layered layout for the DAG tab
 src/app/                 console, browse, upload, login, API routes
 scripts/seed.ts          push wiki/, .claude/, raw/, CLAUDE.md into an empty content repo
 test/                    unit tests plus a scripted end-to-end run against a scratch git repo
