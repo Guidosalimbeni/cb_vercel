@@ -16,6 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <Link href="/" className="brand">cb · causal brain</Link>
           <Link href="/">Console</Link>
           <Link href="/browse?path=wiki">Wiki</Link>
+          <Link href="/dag">DAG</Link>
           <Link href="/browse?path=.claude/SKILLS.md">Skills</Link>
           <Link href="/upload">Upload</Link>
           <span className="spacer" />
