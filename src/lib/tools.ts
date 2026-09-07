@@ -4,6 +4,8 @@ import { Repo, PathError, normalizePath, numberedLines } from "./repo";
 export interface ToolResult {
   content: string;
   isError?: boolean;
+  /** set by tools that must wait for the analyst: the loop stops and resumes with their answer */
+  pause?: unknown;
 }
 
 export interface CommitEvent {

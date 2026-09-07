@@ -36,7 +36,9 @@ export function buildMainSystem(repo: Repo, opts: { skills: SkillInfo[]; agents:
     TOOL_NOTES,
     `## How this conversation works
 - Today is ${today()}. Use it for \`on:\` spans, \`opened:\` and \`recorded_on:\` fields. The analyst's name for \`{by:...}\` spans is "${opts.analyst || "analyst"}" unless they tell you otherwise.
-- The analyst uses a web UI. Your turn ends when you stop calling tools; the UI then shows your final text and waits for them. So "stop and wait for the analyst" simply means: finish your turn with what they need to see. Questions you ask reach them the same way, and their reply arrives as the next user message.
+- The analyst uses a web UI and is not a developer: write for them in plain language, short paragraphs, and lead with what they need to know. Your final text of each turn is shown to them as the result, so make it read well on its own.
+- **Every question goes through \`ask_analyst\`**, never as plain text at the end of a turn. It shows the analyst your options as buttons plus an "Other" box, and your turn continues with their answer as the tool result. Use it for the interviewer's questions (keep the interviewer's wording, take its suggested options), for the every-third-exchange checkpoint (proceed / keep going / park it, with your recommendation first), for data_mode, deliverable and delivery, and for any confirmation. One ask_analyst call per turn; several questions can go in one call.
+- "Stop and wait for the analyst" for a deliverable (a notebook or report they must run or read) means: finish your turn with a short summary of what you wrote and where. Their reply arrives as the next user message.
 - Slash commands arrive as user messages starting with a line like \`[/cb_ask "..."]\` followed by that command's instructions. Available: ${opts.commandNames.map((c) => "/" + c).join(", ")}.
 ${opts.qid ? `- This thread belongs to question \`${opts.qid}\`. "The open one" means this question.` : "- No question is attached to this thread yet. If a command opens one, the thread will follow it from then on."}
 ${
@@ -66,7 +68,8 @@ export function buildSubagentSystem(repo: Repo, agent: AgentDef, skills: SkillIn
     `## How you were invoked
 - Today is ${today()}.
 - The main agent invoked you with a task. You see only that task and the repository, never the main conversation. Work with your tools until you are done, then end with your answer as plain text: that text is everything the main agent receives.
-- You cannot talk to the analyst directly. If you need something only they know (an interview question, a checkpoint, a confirmation), end your turn with exactly what to ask, clearly marked. The main agent relays it, and you will be invoked again with their answer and your memory of this exchange intact.
+- You cannot talk to the analyst directly. If you need something only they know (an interview question, a checkpoint, a confirmation), end your turn with exactly what to ask, clearly marked, **and offer 2 to 4 plausible answers as options** (the main agent shows them as choices plus a free-text "Other"). One question at a time. The main agent relays it, and you will be invoked again with their answer and your memory of this exchange intact.
+- Write for a non-developer: plain language, short, no jargon that the wiki itself does not use.
 - Your tools are the ones your definition allows${agent.tools.length ? ` (${agent.tools.join(", ")})` : ""}, mapped to this platform's equivalents.`,
     ...extra,
     skillsSection(skills),

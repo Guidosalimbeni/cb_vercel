@@ -1,12 +1,21 @@
-import type { MessageParam } from "./runner";
+import type { MessageParam, PendingInput } from "./runner";
 import type { Repo } from "./repo";
 import { repairHistory } from "./runner";
+
+/** One question for the analyst, shaped like Claude Code's AskUserQuestion. */
+export interface AskQuestion {
+  question: string;
+  header?: string;
+  options: { label: string; description?: string }[];
+  multiSelect?: boolean;
+}
 
 export const THREAD_DIR = ".cb/threads";
 
 export interface LogEvent {
   t: string;
-  kind: "user" | "text" | "thinking" | "tool" | "agent_start" | "agent_end" | "commit" | "note" | "error" | "server_tool";
+  kind: "user" | "text" | "thinking" | "tool" | "agent_start" | "agent_end" | "commit" | "note" | "error" | "server_tool" | "ask";
+  questions?: AskQuestion[];
   agent: string;
   text?: string;
   name?: string;
@@ -25,8 +34,12 @@ export interface Thread {
   qid?: string;
   created: string;
   updated: string;
-  awaiting: "analyst" | "continue" | null;
+  awaiting: "analyst" | "continue" | "answer" | null;
   lastCommand?: string;
+  /** a question the main agent asked through ask_analyst; the turn resumes when it is answered */
+  pending?: PendingInput & { questions: AskQuestion[] };
+  /** the main agent's last text of the last turn: what the analyst should read */
+  final?: string;
   /** the main agent's conversation */
   main: MessageParam[];
   /** resumable subagent conversations, keyed by agent name */
@@ -48,6 +61,8 @@ export interface ThreadSummary {
   awaiting: Thread["awaiting"];
   lastCommand?: string;
   commits: number;
+  final?: string;
+  pending?: { questions: AskQuestion[] };
 }
 
 export function newThreadId(): string {
@@ -75,13 +90,13 @@ export function loadThread(repo: Repo, id: string): Thread | undefined {
   t.reads ??= {};
   t.log ??= [];
   t.usage ??= { input: 0, output: 0, cacheRead: 0 };
-  if (repairHistory(t.main)) t.log.push({ t: new Date().toISOString(), kind: "note", agent: "app", text: "A previous run was interrupted mid-tool; the history was repaired." });
+  if (!t.pending && repairHistory(t.main)) t.log.push({ t: new Date().toISOString(), kind: "note", agent: "app", text: "A previous run was interrupted mid-tool; the history was repaired." });
   for (const m of Object.values(t.agents)) repairHistory(m);
   return t;
 }
 
 export function summarize(t: Thread): ThreadSummary {
-  return { id: t.id, title: t.title, qid: t.qid, created: t.created, updated: t.updated, awaiting: t.awaiting, lastCommand: t.lastCommand, commits: t.commits };
+  return { id: t.id, title: t.title, qid: t.qid, created: t.created, updated: t.updated, awaiting: t.awaiting, lastCommand: t.lastCommand, commits: t.commits, final: t.final, pending: t.pending ? { questions: t.pending.questions } : undefined };
 }
 
 export function listThreads(repo: Repo): ThreadSummary[] {

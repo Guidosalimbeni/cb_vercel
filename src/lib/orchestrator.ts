@@ -6,7 +6,7 @@ import { loadAgents, loadCommands, loadSkills, expandCommand, type AgentDef, typ
 import { buildMainSystem, buildSubagentSystem, TECHNICIAN_NOTE } from "./prompts";
 import { STORAGE_TOOL_DEFS, executeStorageTool, isStorageTool, storageTools, toolNamesFromAllowlist, type ToolContext, type ToolResult } from "./tools";
 import { runAgentLoop, type LoopEvent, type LoopStatus, type StreamClient } from "./runner";
-import { loadThread, newThread, saveThread, summarize, type LogEvent, type Thread, type ThreadSummary } from "./threads";
+import { loadThread, newThread, saveThread, summarize, type AskQuestion, type LogEvent, type Thread, type ThreadSummary } from "./threads";
 import { fakeClient } from "./fake-client";
 
 export interface RunInput {
@@ -14,6 +14,8 @@ export interface RunInput {
   command?: string;
   args?: string;
   message?: string;
+  /** answers to a pending ask_analyst question: question text -> chosen labels (or the typed "other") */
+  answers?: Record<string, string[]>;
   analyst?: string;
 }
 
@@ -29,7 +31,8 @@ export type SSEEvent =
   | { type: "agent_end"; agent: string; status: LoopStatus; text: string }
   | { type: "commit"; agent: string; path: string; commit: string; url?: string; message: string }
   | { type: "usage"; agent: string; input: number; output: number; cacheRead: number }
-  | { type: "done"; status: LoopStatus; awaiting: Thread["awaiting"]; threadId: string; qid?: string; text: string }
+  | { type: "ask"; questions: AskQuestion[] }
+  | { type: "done"; status: LoopStatus; awaiting: Thread["awaiting"]; threadId: string; qid?: string; text: string; questions?: AskQuestion[] }
   | { type: "error"; message: string };
 
 /** Commands on which the analyst may have asked for code to run here. */
@@ -60,6 +63,69 @@ function invokeSubagentTool(agents: AgentDef[]): Anthropic.Tool {
   };
 }
 
+const ASK_TOOL: Anthropic.Tool = {
+  name: "ask_analyst",
+  description:
+    "Ask the analyst one to four questions and wait for their answers (Claude Code's AskUserQuestion). Each question offers 2 to 4 concrete options; the analyst can always pick Other and type. Use it for every question you need answered: relaying the interviewer's questions, the every-third-exchange checkpoint (proceed / keep going / park it), deliverable and data-mode choices, confirmations. Never end your turn with a question in plain text. The tool result is their answer, and your turn continues from there.",
+  input_schema: {
+    type: "object",
+    properties: {
+      questions: {
+        type: "array",
+        minItems: 1,
+        maxItems: 4,
+        items: {
+          type: "object",
+          properties: {
+            question: { type: "string", description: "The full question, ending with a question mark" },
+            header: { type: "string", description: "Very short label, max 12 chars, e.g. 'Data mode'" },
+            options: {
+              type: "array",
+              minItems: 2,
+              maxItems: 4,
+              items: {
+                type: "object",
+                properties: { label: { type: "string", description: "1-5 words" }, description: { type: "string", description: "What choosing this means" } },
+                required: ["label"],
+              },
+            },
+            multiSelect: { type: "boolean", description: "Allow several options at once (default false)" },
+          },
+          required: ["question", "options"],
+        },
+      },
+    },
+    required: ["questions"],
+  },
+};
+
+function parseQuestions(input: unknown): AskQuestion[] {
+  const qs = ((input ?? {}) as { questions?: unknown[] }).questions;
+  if (!Array.isArray(qs)) return [];
+  return qs
+    .map((q) => q as Partial<AskQuestion>)
+    .filter((q) => typeof q.question === "string" && q.question.trim())
+    .slice(0, 4)
+    .map((q) => ({
+      question: q.question!.trim(),
+      header: typeof q.header === "string" ? q.header.slice(0, 12) : undefined,
+      options: (Array.isArray(q.options) ? q.options : [])
+        .filter((o) => o && typeof (o as { label?: unknown }).label === "string")
+        .slice(0, 4)
+        .map((o) => ({ label: String((o as { label: string }).label), description: typeof (o as { description?: unknown }).description === "string" ? (o as { description: string }).description : undefined })),
+      multiSelect: q.multiSelect === true,
+    }));
+}
+
+function formatAnswers(questions: AskQuestion[], answers: Record<string, string[]> | undefined, freeText?: string): string {
+  if (freeText) return `The analyst replied in their own words instead of picking an option:\n\n${freeText}`;
+  const lines = questions.map((q, i) => {
+    const a = answers?.[q.question] ?? answers?.[String(i)] ?? [];
+    return `Q: ${q.question}\nA: ${a.length ? a.join("; ") : "(no answer)"}`;
+  });
+  return `The analyst answered:\n\n${lines.join("\n\n")}`;
+}
+
 function trunc(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + `\n…[${s.length - n} more chars]` : s;
 }
@@ -87,11 +153,26 @@ export async function runTurn(input: RunInput, emit: (e: SSEEvent) => void, clie
   // ---- the user turn
   let userText: string | undefined;
   let command = input.command?.trim();
-  if (command) {
+  let answeredPending = false;
+  if (thread?.pending && (input.answers || input.message?.trim()) && !command) {
+    // resume the paused turn: the analyst's answer is the tool result the model is waiting for
+    const p = thread.pending;
+    const text = formatAnswers(p.questions, input.answers, input.answers ? undefined : input.message?.trim());
+    thread.main.push({ role: "user", content: [...p.partialResults, { type: "tool_result", tool_use_id: p.toolUseId, content: text }] });
+    thread.log.push({ t: new Date().toISOString(), kind: "user", agent: "analyst", text });
+    thread.pending = undefined;
+    answeredPending = true;
+    emit({ type: "user", text });
+  } else if (command) {
     const def = commands.find((c) => c.name === command);
     if (!def) {
       emit({ type: "error", message: `Unknown command /${command}. Available: ${commands.map((c) => c.name).join(", ")}` });
       return;
+    }
+    if (thread?.pending) {
+      // a command arrived while a question was open: close the question so the history stays valid
+      thread.main.push({ role: "user", content: [...thread.pending.partialResults, { type: "tool_result", tool_use_id: thread.pending.toolUseId, content: "The analyst did not answer and ran a command instead.", is_error: true }] });
+      thread.pending = undefined;
     }
     const args = (input.args ?? "").trim();
     userText = `[/${def.name}${args ? ` ${JSON.stringify(args)}` : ""}]\n\n${expandCommand(def, args)}`;
@@ -103,6 +184,10 @@ export async function runTurn(input: RunInput, emit: (e: SSEEvent) => void, clie
     command = undefined;
     if (!thread) {
       emit({ type: "error", message: "Nothing to run: give a command or a message." });
+      return;
+    }
+    if (thread.pending) {
+      emit({ type: "error", message: "This thread is waiting for an answer to its question." });
       return;
     }
     const last = thread.main[thread.main.length - 1];
@@ -121,6 +206,7 @@ export async function runTurn(input: RunInput, emit: (e: SSEEvent) => void, clie
     log({ kind: "user", agent: "analyst", text: userText });
     emit({ type: "user", text: userText });
   }
+  void answeredPending;
   emit({ type: "thread", thread: summarize(t) });
 
   const effectiveCommand = command ?? t.lastCommand;
@@ -230,12 +316,13 @@ export async function runTurn(input: RunInput, emit: (e: SSEEvent) => void, clie
 
   // ---- main agent
   const mainCtx: ToolContext = { repo, agent: "main", canWrite: true, readSet: readSet("main"), commitPrefix, onCommit: onCommit("main") };
-  const tools: Anthropic.Messages.ToolUnion[] = [...Object.values(STORAGE_TOOL_DEFS), invokeSubagentTool(agents)];
+  const tools: Anthropic.Messages.ToolUnion[] = [...Object.values(STORAGE_TOOL_DEFS), invokeSubagentTool(agents), ASK_TOOL];
   if (codeExecution) tools.push({ type: "code_execution_20260120", name: "code_execution" });
   const system = buildMainSystem(repo, { skills, agents, qid: t.qid, commandNames: commands.map((c) => c.name), codeExecution, analyst: input.analyst });
 
   let status: LoopStatus = "done";
   let finalText = "";
+  let pendingQuestions: AskQuestion[] | undefined;
   try {
     const result = await runAgentLoop({
       client,
@@ -247,6 +334,11 @@ export async function runTurn(input: RunInput, emit: (e: SSEEvent) => void, clie
       effort: config.effort,
       showThinking: config.showThinking,
       execute: async (name, inp) => {
+        if (name === "ask_analyst") {
+          const questions = parseQuestions(inp);
+          if (!questions.length) return { content: "ask_analyst needs at least one question with options.", isError: true };
+          return { content: "", pause: questions };
+        }
         if (name === "invoke_subagent") {
           const i = (inp ?? {}) as { agent?: string; task?: string; resume?: boolean };
           return runSubagent(String(i.agent ?? ""), String(i.task ?? ""), i.resume === true);
@@ -259,6 +351,12 @@ export async function runTurn(input: RunInput, emit: (e: SSEEvent) => void, clie
     });
     status = result.status;
     finalText = result.finalText;
+    if (result.status === "awaiting_input" && result.pending) {
+      pendingQuestions = result.pending.payload as AskQuestion[];
+      t.pending = { ...result.pending, questions: pendingQuestions };
+      log({ kind: "ask", agent: "main", questions: pendingQuestions });
+      emit({ type: "ask", questions: pendingQuestions });
+    }
   } catch (e) {
     const msg = e instanceof Anthropic.APIError ? `Anthropic API error ${e.status}: ${e.message}` : (e as Error).message;
     flushText("main");
@@ -280,7 +378,8 @@ export async function runTurn(input: RunInput, emit: (e: SSEEvent) => void, clie
   }
   if (command) t.lastCommand = command;
   const last = t.main[t.main.length - 1];
-  t.awaiting = status === "paused" || (last && last.role === "user") ? "continue" : "analyst";
+  t.awaiting = t.pending ? "answer" : status === "paused" || (last && last.role === "user") ? "continue" : "analyst";
+  t.final = finalText;
   if (status === "max_rounds") log({ kind: "note", agent: "app", text: `Stopped after ${config.maxRounds} tool rounds. Send "continue" to carry on.` });
 
   try {
@@ -288,5 +387,5 @@ export async function runTurn(input: RunInput, emit: (e: SSEEvent) => void, clie
   } catch (e) {
     emit({ type: "error", message: `Could not save thread state: ${(e as Error).message}` });
   }
-  emit({ type: "done", status, awaiting: t.awaiting, threadId: t.id, qid: t.qid, text: finalText });
+  emit({ type: "done", status, awaiting: t.awaiting, threadId: t.id, qid: t.qid, text: finalText, questions: pendingQuestions });
 }

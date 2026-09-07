@@ -3,13 +3,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { layoutDag, nodeWidth, related, NODE_H, type Dag, type DagEdge, type DagNode } from "@/lib/dag";
 
 /** Node fill by measured_at: the three validated dark categorical slots; unknown is neutral. */
-const TIMING: Record<string, { color: string; tag: string; label: string }> = {
-  pre_treatment: { color: "#3987e5", tag: "PRE", label: "measured before treatment" },
-  post_treatment: { color: "#d95926", tag: "POST", label: "measured after treatment" },
-  concurrent: { color: "#199e70", tag: "CONC", label: "measured concurrently" },
-  unknown: { color: "#5b6274", tag: "?", label: "timing unknown" },
+const TIMING: Record<string, { color: string; fill: string; tag: string; label: string }> = {
+  pre_treatment: { color: "#2a78d6", fill: "#dbe8fa", tag: "PRE", label: "measured before treatment" },
+  post_treatment: { color: "#eb6834", fill: "#fde3d8", tag: "POST", label: "measured after treatment" },
+  concurrent: { color: "#1baf7a", fill: "#d6f3e6", tag: "CONC", label: "measured concurrently" },
+  unknown: { color: "#8a929e", fill: "#eceff3", tag: "?", label: "timing unknown" },
 };
 const timing = (m: string) => TIMING[m] ?? TIMING.unknown;
+
+/** What goes in the box: the short id, the way a column is named. The full label lives in the side panel. */
+function labelOf(n: DagNode | undefined): string {
+  return n?.id ?? "";
+}
 
 export function DagView() {
   const [dag, setDag] = useState<Dag | null>(null);
@@ -54,7 +59,7 @@ export function DagView() {
   const layout = useMemo(() => {
     const l = layoutDag(shown.nodes.map((n) => n.id), shown.edges);
     const byId = new Map(shown.nodes.map((n) => [n.id, n]));
-    for (const p of l.nodes) p.w = nodeWidth(byId.get(p.id)?.label ?? p.id);
+    for (const p of l.nodes) p.w = nodeWidth(labelOf(byId.get(p.id)));
     return l;
   }, [shown]);
 
@@ -149,8 +154,8 @@ export function DagView() {
           ) : (
             <svg ref={svgRef} className="dag-svg" onPointerDown={(e) => onDown(e, null)} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp} onWheel={onWheel}>
               <defs>
-                <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8b93a7" /></marker>
-                <marker id="arrow-hi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#e6e8ee" /></marker>
+                <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7b8594" /></marker>
+                <marker id="arrow-hi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#1c2128" /></marker>
               </defs>
               <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
                 {shown.edges.map((e) => {
@@ -171,9 +176,9 @@ export function DagView() {
                     <g key={n.id} transform={`translate(${p.x} ${p.y})`} opacity={dim(n.id) ? 0.25 : 1} className="dag-node"
                       onPointerDown={(ev) => { ev.stopPropagation(); onDown(ev, n.id); }}
                       onClick={(ev) => { ev.stopPropagation(); setSelected(isSel ? null : n.id); }}>
-                      <rect width={p.w} height={p.h} rx="8" fill={n.observed === "false" || n.missing ? "#161a22" : t.color} stroke={isSel ? "#e6e8ee" : t.color} strokeWidth={isSel ? 3 : 2} strokeDasharray={n.observed === "false" ? "6 4" : n.missing ? "2 4" : undefined} />
-                      <text x={p.w / 2} y={NODE_H / 2 + 1} textAnchor="middle" dominantBaseline="middle" fill={n.observed === "false" || n.missing ? "#e6e8ee" : "#0b0d12"} fontSize="13" fontWeight={600}>{n.label}</text>
-                      <text x={p.w - 6} y={11} textAnchor="end" fontSize="9" fill={n.observed === "false" || n.missing ? "#8b93a7" : "#0b0d12"} opacity={0.85}>{n.missing ? "no file" : t.tag}</text>
+                      <rect width={p.w} height={p.h} rx="8" fill={n.observed === "false" || n.missing ? "#ffffff" : t.fill} stroke={isSel ? "#1c2128" : t.color} strokeWidth={isSel ? 3 : 2} strokeDasharray={n.observed === "false" ? "6 4" : n.missing ? "2 4" : undefined} />
+                      <text x={p.w / 2} y={NODE_H / 2 + 1} textAnchor="middle" dominantBaseline="middle" fill="#1c2128" fontSize="13" fontFamily="ui-monospace, Menlo, Consolas, monospace" fontWeight={600}>{labelOf(n)}</text>
+                      <text x={p.w - 6} y={11} textAnchor="end" fontSize="9" fill={t.color} fontWeight={700}>{n.missing ? "no file" : t.tag}</text>
                     </g>
                   );
                 })}
@@ -211,7 +216,7 @@ export function DagView() {
             </div>
           ) : (
             <div className="hint">
-              <p><strong>Click a node</strong> to see its fields, its edges with their reasoning, and to highlight its ancestors and descendants. Drag nodes to tidy the picture, scroll to zoom, drag the background to pan.</p>
+              <p><strong>Click a node</strong> to read what it is, its edges with their reasoning, and to highlight everything upstream and downstream of it. Drag nodes to tidy the picture, scroll to zoom, drag the background to pan.</p>
               <p>Causes sit on the left, effects on the right. A dashed outline is a node marked <code>observed: false</code>, the material refusals are made of. A dashed edge has no <code>{"{by:... on:...}"}</code> span: nobody has confirmed it.</p>
               {dag.warnings.length ? <details><summary>{dag.warnings.length} warning{dag.warnings.length === 1 ? "" : "s"}</summary><ul>{dag.warnings.map((w) => <li key={w}>{w}</li>)}</ul></details> : null}
               {layout.backEdges.length ? <p>Cycle detected through: {layout.backEdges.join(", ")}. A causal graph should not have one.</p> : null}

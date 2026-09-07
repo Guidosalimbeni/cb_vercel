@@ -158,3 +158,36 @@ test("cb_dag exposes code_execution; a reviewer cannot write; unknown command er
   await runTurn({ command: "cb_nope" }, (e) => errs.push(e), client);
   assert.match(String((errs[0] as { message: string }).message), /Unknown command/);
 });
+
+test("ask_analyst pauses the turn, the answer resumes it as the tool result", async () => {
+  const client = stubClient((p) => {
+    const u = lastUser(p);
+    if (p.messages.length === 1) {
+      return { stop_reason: "tool_use", content: [text("Before I start:"), tool("q1", "ask_analyst", { questions: [{ question: "Is the data live or a sample?", header: "Data mode", options: [{ label: "live", description: "a warehouse connection" }, { label: "sample" }, { label: "simulated" }] }] })] };
+    }
+    if (u.includes('"tool_use_id":"q1"')) {
+      assert.match(u, /The analyst answered/);
+      assert.match(u, /A: Other: a parquet extract from March/);
+      return { stop_reason: "end_turn", content: [text("Thanks, a sample it is.")] };
+    }
+    return { stop_reason: "end_turn", content: [text("(fallback)")] };
+  });
+  const events: Record<string, unknown>[] = [];
+  await runTurn({ command: "cb_status" }, (e) => events.push(e), client);
+  const done = events.find((e) => e.type === "done") as { threadId: string; awaiting: string; text: string; questions?: unknown[] };
+  assert.equal(done.awaiting, "answer");
+  assert.equal(done.text, "Before I start:");
+  assert.equal((done.questions as { header: string }[])[0].header, "Data mode");
+  assert.ok(events.some((e) => e.type === "ask"));
+
+  const events2: Record<string, unknown>[] = [];
+  await runTurn({ threadId: done.threadId, answers: { "Is the data live or a sample?": ["Other: a parquet extract from March"] } }, (e) => events2.push(e), client);
+  const done2 = events2.find((e) => e.type === "done") as { awaiting: string; text: string };
+  assert.equal(done2.awaiting, "analyst");
+  assert.equal(done2.text, "Thanks, a sample it is.");
+  // the resumed call carried the tool_result for q1 as its last user message
+  const resumed = client.calls[client.calls.length - 1];
+  const lastMsg = resumed.messages[resumed.messages.length - 1];
+  assert.equal(lastMsg.role, "user");
+  assert.equal((lastMsg.content as { tool_use_id: string }[])[0].tool_use_id, "q1");
+});

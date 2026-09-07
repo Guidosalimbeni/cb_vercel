@@ -73,7 +73,7 @@ npm run build
    | `GITHUB_REPO` | `owner/name` of the content repo |
    | `GITHUB_BRANCH` | `main` |
    | `APP_PASSWORD` | the shared password for your friends |
-   | `CB_MODEL` | `claude-sonnet-5` (default) |
+   | `CB_MODEL` | `claude-sonnet-5` (default) or `claude-opus-5` |
    | `CB_RUN_BUDGET_SECONDS` | `240` (default; stay under the plan's function limit) |
 
 4. Deploy. On the Hobby plan a function may run for up to 300 s with Fluid Compute (on by default
