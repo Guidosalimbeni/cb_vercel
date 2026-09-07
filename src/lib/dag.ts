@@ -174,7 +174,7 @@ const X_GAP = 240;
 const Y_GAP = 84;
 
 export function nodeWidth(label: string): number {
-  return Math.max(120, Math.min(260, 24 + label.length * 7.6));
+  return Math.max(110, Math.min(260, 28 + label.length * 8));
 }
 
 /** Left-to-right layered layout: causes on the left, effects on the right. */

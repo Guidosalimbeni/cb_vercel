@@ -36,12 +36,22 @@ export interface LoopOptions {
   maxRounds: number;
 }
 
-export type LoopStatus = "done" | "paused" | "max_rounds" | "refusal";
+export type LoopStatus = "done" | "paused" | "max_rounds" | "refusal" | "awaiting_input";
+
+/** A tool call that must wait for the analyst: the turn stops here and resumes with their answer. */
+export interface PendingInput {
+  toolUseId: string;
+  toolName: string;
+  payload: unknown;
+  /** results of the other tools called in the same assistant message */
+  partialResults: Anthropic.ToolResultBlockParam[];
+}
 
 export interface LoopResult {
   status: LoopStatus;
   finalText: string;
   rounds: number;
+  pending?: PendingInput;
 }
 
 export function textOf(content: Anthropic.ContentBlock[] | MessageParam["content"]): string {
@@ -111,6 +121,7 @@ export async function runAgentLoop(o: LoopOptions): Promise<LoopResult> {
     }
 
     const results: Anthropic.ToolResultBlockParam[] = [];
+    let pending: PendingInput | undefined;
     for (const tu of toolUses) {
       o.onEvent({ type: "tool_call", id: tu.id, name: tu.name, input: tu.input });
       let r: ToolResult;
@@ -119,9 +130,21 @@ export async function runAgentLoop(o: LoopOptions): Promise<LoopResult> {
       } catch (e) {
         r = { content: `Tool failed: ${(e as Error).message}`, isError: true };
       }
+      if (r.pause) {
+        if (pending) {
+          results.push({ type: "tool_result", tool_use_id: tu.id, content: "Only one question can be pending at a time; ask this one after the analyst answers the first.", is_error: true });
+          continue;
+        }
+        pending = { toolUseId: tu.id, toolName: tu.name, payload: r.pause, partialResults: results };
+        continue;
+      }
       const content = r.content === "" ? "(no output)" : r.content;
       o.onEvent({ type: "tool_result", id: tu.id, name: tu.name, content, isError: !!r.isError });
       results.push({ type: "tool_result", tool_use_id: tu.id, content, ...(r.isError ? { is_error: true } : {}) });
+    }
+    if (pending) {
+      pending.partialResults = results;
+      return { status: "awaiting_input", finalText: lastText, rounds, pending };
     }
     o.messages.push({ role: "user", content: results });
   }
